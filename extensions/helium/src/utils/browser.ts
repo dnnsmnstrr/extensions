@@ -1,6 +1,8 @@
 import { BrowserExtension, environment, showToast, Toast, open } from "@raycast/api";
 import { Tab } from "../types";
-import { listHeliumTabs } from "./applescript";
+import { listHeliumTabs } from "./browser-control";
+import { isWindows } from "./platform";
+import { browserExtensionTabsToTabs, mergeAppleScriptTabsWithFavicons } from "./tab-merge";
 
 /**
  * Check if Browser Extension is available.
@@ -24,36 +26,39 @@ export function isBrowserExtensionAvailable(): boolean {
  * these are attached by URL match. Tabs BE never sees (local files,
  * chrome://) simply have no favicon and the UI falls back to `Icon.Globe`.
  *
- * Each tab carries its Helium AS `id` as `heliumId`, which subsequent
- * actions use to target exact tabs (duplicate URLs included) via
- * {@link switchToHeliumTabById}/{@link closeHeliumTabById}.
+ * `Tab.id` is the stable Helium AppleScript `id`, used everywhere we need to
+ * refer to a specific tab (React keys, optimistic state, and tab actions).
  *
- * `Tab.id` here is a synthetic 1-indexed ordinal (from AS traversal order),
- * used only for React keys and optimistic-update tracking. It is not a Chrome
- * tab id and should not be treated as one.
+ * On Windows there is no AppleScript, so the Browser Extension is the only tab
+ * source and its own tab id becomes `Tab.id`. It is awaited without a timeout
+ * there, since it is the data itself rather than an enrichment.
+ *
+ * Known limitation on Windows: `BrowserExtension.Tab` carries no browser
+ * identity (only `id`, `url`, `title`, `favicon`, `active`), so tabs cannot be
+ * scoped to Helium. If the Raycast browser extension is also installed in
+ * another Chromium browser, its tabs appear here too, and opening one loads the
+ * URL in Helium. There is no API to filter them — the UI and README say so
+ * rather than pretending the list is Helium-only.
  */
+export async function fetchBrowserTabs(): Promise<Tab[]> {
+  if (isWindows) {
+    if (!isBrowserExtensionAvailable()) return [];
+    return browserExtensionTabsToTabs(await BrowserExtension.getTabs());
+  }
+
+  const [asTabs, beTabs] = await Promise.all([
+    listHeliumTabs(),
+    isBrowserExtensionAvailable()
+      ? withTimeout(BrowserExtension.getTabs(), 250, []).catch(() => [])
+      : Promise.resolve([]),
+  ]);
+
+  return mergeAppleScriptTabsWithFavicons(asTabs, beTabs);
+}
+
 export async function getBrowserTabs(): Promise<Tab[]> {
   try {
-    const [asTabs, beTabs] = await Promise.all([
-      listHeliumTabs(),
-      isBrowserExtensionAvailable() ? BrowserExtension.getTabs().catch(() => []) : Promise.resolve([]),
-    ]);
-
-    // URL -> favicon, sourced from BE (AS doesn't expose favicons). Same URL
-    // implies same favicon, so a plain URL map suffices even for duplicates.
-    const faviconByUrl = new Map<string, string>();
-    for (const t of beTabs) {
-      if (t.favicon && !faviconByUrl.has(t.url)) faviconByUrl.set(t.url, t.favicon);
-    }
-
-    return asTabs.map((t, i) => ({
-      id: i + 1,
-      url: t.url,
-      title: t.title || "",
-      favicon: faviconByUrl.get(t.url),
-      active: false,
-      heliumId: t.heliumId,
-    }));
+    return await fetchBrowserTabs();
   } catch (error) {
     await showToast({
       style: Toast.Style.Failure,
@@ -61,6 +66,20 @@ export async function getBrowserTabs(): Promise<Tab[]> {
       message: error instanceof Error ? error.message : "Unknown error occurred",
     });
     return [];
+  }
+}
+
+export async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, fallback: T): Promise<T> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((resolve) => {
+        timeout = setTimeout(() => resolve(fallback), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
   }
 }
 

@@ -5,7 +5,7 @@ import FormData from "form-data";
 import { markdownToAdf } from "marklassian";
 
 import { IssueFormValues } from "../components/CreateIssueForm";
-import { CustomFieldSchema, getCustomFieldValue } from "../helpers/issues";
+import { CustomFieldSchema, getCustomFieldValue } from "../helpers/customFields";
 
 import { Project } from "./projects";
 import { autocomplete, getAuthenticatedUri, request } from "./request";
@@ -100,12 +100,14 @@ export async function createIssue(values: IssueFormValues, { customFields }: Cre
   });
 }
 
-export enum StatusCategoryKey {
-  indeterminate = "indeterminate",
-  new = "new",
-  done = "done",
-  unknown = "unknown",
-}
+export const StatusCategoryKey = {
+  indeterminate: "indeterminate",
+  new: "new",
+  done: "done",
+  unknown: "unknown",
+} as const;
+
+export type StatusCategoryKey = (typeof StatusCategoryKey)[keyof typeof StatusCategoryKey];
 
 type IssueStatus = {
   id: string;
@@ -255,11 +257,22 @@ export type Issue = {
 };
 
 export const resolveIssueTypeIconUris = async (issuetype: IssueType) => {
-  const resolvedIconUri = await getAuthenticatedUri(issuetype.iconUrl, "image/jpeg");
-  issuetype.iconUrl = resolvedIconUri;
+  await resolveIssueTypeIconUri(issuetype);
 
   return issuetype;
 };
+
+async function resolveIssueTypeIconUri(issuetype?: IssueType) {
+  if (!issuetype?.iconUrl) {
+    return;
+  }
+
+  try {
+    issuetype.iconUrl = await getAuthenticatedUri(issuetype.iconUrl, "image/jpeg");
+  } catch {
+    // Keep the original Jira icon URL when Jira returns an HTML error page instead of image content.
+  }
+}
 
 type GetIssuesResponse = {
   issues?: Issue[];
@@ -316,10 +329,7 @@ export async function getIssues({ jql } = { jql: "" }) {
 
   const resolvedIssues = await Promise.all(
     rawIssues.map(async (issue) => {
-      const iconUrl = issue?.fields?.issuetype?.iconUrl;
-      if (iconUrl) {
-        issue.fields.issuetype.iconUrl = await getAuthenticatedUri(iconUrl, "image/jpeg");
-      }
+      await resolveIssueTypeIconUri(issue?.fields?.issuetype);
       return issue;
     }),
   );
@@ -400,7 +410,7 @@ async function getCreateIssueMetadataWithParams(params: {
     result.projects.map(async (project) => {
       const resolvedIssueTypes = await Promise.all(
         project.issuetypes.map(async (issueType) => {
-          issueType.iconUrl = await getAuthenticatedUri(issueType.iconUrl, "image/jpeg");
+          await resolveIssueTypeIconUri(issueType);
           return issueType;
         }),
       );
@@ -503,12 +513,9 @@ export async function getIssue(issueIdOrKey: string) {
     return issue;
   }
 
-  issue.fields.issuetype.iconUrl = await getAuthenticatedUri(issue.fields.issuetype.iconUrl, "image/jpeg");
+  await resolveIssueTypeIconUri(issue.fields.issuetype);
   if (issue.fields.parent) {
-    issue.fields.parent.fields.issuetype.iconUrl = await getAuthenticatedUri(
-      issue.fields.parent.fields.issuetype.iconUrl,
-      "image/jpeg",
-    );
+    await resolveIssueTypeIconUri(issue.fields.parent.fields.issuetype);
   }
 
   return issue;

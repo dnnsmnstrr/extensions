@@ -1,5 +1,13 @@
 # Tailscale Changelog
 
+## [Fix] - 2026-08-21
+
+- Reduced background connection-status refreshes to once per minute.
+
+## [Add new features] - 2026-05-07
+
+- Added Menu bar indicator: shows an icon when connected, nothing when disconnected
+
 ## [Fix Account Switcher] - 2026-04-12
 
 - Fix "Switch Account" not showing tailnet and account names correctly
