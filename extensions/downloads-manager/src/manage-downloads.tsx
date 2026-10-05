@@ -1,6 +1,17 @@
-import { ActionPanel, Action, List, Grid, Icon, Keyboard } from "@raycast/api";
-import { useCachedState, usePromise } from "@raycast/utils";
-import { PathLike } from "fs";
+import {
+  ActionPanel,
+  Action,
+  Alert,
+  confirmAlert,
+  Grid,
+  Icon,
+  Keyboard,
+  List,
+  LocalStorage,
+  showToast,
+  Toast,
+} from "@raycast/api";
+import { showFailureToast, useCachedState, usePromise } from "@raycast/utils";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   defaultDownloadsLayout,
@@ -15,6 +26,7 @@ import {
   Download,
   formatFileSize,
   getFileType,
+  moveToTrash,
 } from "./utils";
 
 function FilePreviewDetail({ download, isSelected }: { download: Download; isSelected: boolean }) {
@@ -82,6 +94,7 @@ function FilePreviewDetail({ download, isSelected }: { download: Download; isSel
 }
 
 const PAGE_SIZE = 100;
+const MOVE_TO_TRASH_CONFIRMATION_KEY = "manage-downloads-move-to-trash-confirmed";
 
 function Command({ currentFolderPath = downloadsFolder }: { currentFolderPath?: string }) {
   const [downloads, setDownloads] = useState<Download[]>([]);
@@ -132,12 +145,58 @@ function Command({ currentFolderPath = downloadsFolder }: { currentFolderPath?: 
     }
   }, [isLoading, hasMore, nextOffset, loadNextPage]);
 
-  function handleTrash(paths: PathLike | PathLike[]) {
+  function handleTrash(paths: string | string[]) {
     setDownloads((downloads: Download[]) =>
       downloads.filter((download: Download) =>
         Array.isArray(paths) ? !paths.includes(download.path) : paths !== download.path,
       ),
     );
+  }
+
+  async function handleMoveToTrash(paths: string | string[]) {
+    const hasConfirmedMoveToTrash = await LocalStorage.getItem<boolean>(MOVE_TO_TRASH_CONFIRMATION_KEY);
+    let shouldTrash = hasConfirmedMoveToTrash ?? false;
+
+    if (!hasConfirmedMoveToTrash) {
+      shouldTrash = await confirmAlert({
+        title: "Move to Trash?",
+        message: "Are you sure you want to move the selected download item(s) to Trash?",
+        primaryAction: {
+          title: "Move to Trash",
+          style: Alert.ActionStyle.Destructive,
+        },
+        dismissAction: {
+          title: "Cancel",
+          style: Alert.ActionStyle.Cancel,
+        },
+      });
+
+      if (shouldTrash) {
+        await LocalStorage.setItem(MOVE_TO_TRASH_CONFIRMATION_KEY, true);
+      }
+    }
+
+    if (!shouldTrash) {
+      return;
+    }
+
+    try {
+      const { trashedPaths, failedPaths } = await moveToTrash(paths);
+      handleTrash(trashedPaths);
+
+      if (failedPaths.length > 0) {
+        await showToast({
+          style: Toast.Style.Failure,
+          title: "Some Items Could Not Be Moved to Trash",
+          message: `${failedPaths.length} item${failedPaths.length === 1 ? "" : "s"} could not be moved`,
+        });
+        return;
+      }
+
+      await showToast({ style: Toast.Style.Success, title: "Item Moved to Trash" });
+    } catch (error) {
+      await showFailureToast(error, { title: "Move to Trash Failed" });
+    }
   }
 
   const handleReload = useCallback(() => {
@@ -162,6 +221,14 @@ function Command({ currentFolderPath = downloadsFolder }: { currentFolderPath?: 
           title="Copy File"
           content={{ file: download.path }}
           shortcut={Keyboard.Shortcut.Common.Copy}
+        />
+        <Action.CopyToClipboard
+          title="Copy Path"
+          content={download.path}
+          shortcut={{
+            macOS: { modifiers: ["cmd", "shift"], key: "." },
+            Windows: { modifiers: ["ctrl", "shift"], key: "." },
+          }}
         />
         <Action
           title="Reload Downloads"
@@ -190,17 +257,19 @@ function Command({ currentFolderPath = downloadsFolder }: { currentFolderPath?: 
         />
       </ActionPanel.Section>
       <ActionPanel.Section>
-        <Action.Trash
+        <Action
           title="Delete Download"
-          paths={download.path}
+          icon={Icon.Trash}
           shortcut={Keyboard.Shortcut.Common.Remove}
-          onTrash={handleTrash}
+          style={Action.Style.Destructive}
+          onAction={() => handleMoveToTrash(download.path)}
         />
-        <Action.Trash
+        <Action
           title="Delete All Downloads"
-          paths={downloads.map((d: Download) => d.path)}
+          icon={Icon.Trash}
           shortcut={Keyboard.Shortcut.Common.RemoveAll}
-          onTrash={handleTrash}
+          style={Action.Style.Destructive}
+          onAction={() => handleMoveToTrash(downloads.map((d: Download) => d.path))}
         />
       </ActionPanel.Section>
     </ActionPanel>

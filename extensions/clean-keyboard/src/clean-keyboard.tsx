@@ -1,10 +1,10 @@
-import { Action, ActionPanel, Icon, List, showToast, Toast } from "@raycast/api";
-import { useEffect, useState } from "react";
-import { isMac } from "./lib/utils";
+import { Action, ActionPanel, Icon, List, getPreferenceValues, showToast, Toast } from "@raycast/api";
+import { useEffect, useRef, useState } from "react";
+import { isMac, isTahoe, readFnState, setFnState } from "./lib/utils";
 
 interface Duration {
   display: string;
-  seconds: number;
+  seconds?: number;
   icon: string;
 }
 
@@ -46,7 +46,6 @@ const durations: Duration[] = [
   },
   {
     display: "Forever",
-    seconds: Infinity,
     icon: "🤯",
   },
 ];
@@ -55,9 +54,38 @@ export default function Command() {
   const [isRunning, setIsRunning] = useState(false);
   const [timeLeft, setTimeLeft] = useState<number | null>(null);
   const [icon, setIcon] = useState<string | null>(null);
+  const savedFnState = useRef<boolean | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (savedFnState.current !== null) {
+        try {
+          setFnState(savedFnState.current);
+        } catch {
+          // best-effort restore on unmount
+        }
+        savedFnState.current = null;
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!isRunning && savedFnState.current !== null) {
+      try {
+        setFnState(savedFnState.current);
+      } catch {
+        showToast({
+          title: "Could not restore Fn key setting",
+          message: "Go to System Settings > Keyboard to restore manually",
+          style: Toast.Style.Failure,
+        });
+      }
+      savedFnState.current = null;
+    }
+  }, [isRunning]);
 
   const lockAction = async (duration: Duration) => {
-    let handler: (duration: number) => void;
+    let handler: (duration: number | null) => Promise<void>;
     if (isMac) {
       const { handler: handlerSwift } = await import("swift:../swift/MyExecutable");
       handler = handlerSwift;
@@ -66,18 +94,31 @@ export default function Command() {
       handler = handlerRust;
     }
 
-    setTimeLeft(duration.seconds);
-    setIcon(duration.icon);
-    setIsRunning(true);
-    await showToast({ title: "Keyboard locked" });
+    const { lockFnKeys } = getPreferenceValues<Preferences.CleanKeyboard>();
+    if (lockFnKeys && isTahoe) {
+      try {
+        savedFnState.current = readFnState();
+        setFnState(true);
+      } catch {
+        // keep savedFnState so restore effects can undo any partial defaults write
+      }
+    }
 
-    Promise.resolve(handler(duration.seconds)).catch(async (err) => {
+    const durationSeconds = duration.seconds ?? null;
+    const handlerPromise = handler(durationSeconds);
+
+    handlerPromise.catch(async (err) => {
       // Roll back UI if hook installation failed
       setIsRunning(false);
       setTimeLeft(null);
       setIcon(null);
       await showToast({ title: "Failed to lock keyboard", message: String(err), style: Toast.Style.Failure });
     });
+
+    setTimeLeft(durationSeconds);
+    setIcon(duration.icon);
+    setIsRunning(true);
+    await showToast({ title: "Keyboard locked" });
   };
 
   const unlockAction = async () => {
@@ -120,7 +161,7 @@ export default function Command() {
           title={`Cleaning keyboard${timeLeft ? ` for ${timeLeft} seconds…` : ""}`}
           actions={
             <ActionPanel>
-              <Action title={"Back"} onAction={() => setIsRunning(false)} />
+              {timeLeft !== null && <Action title={"Back"} onAction={() => setIsRunning(false)} />}
               <Action
                 autoFocus={false}
                 title={"Unlock Keyboard"}
